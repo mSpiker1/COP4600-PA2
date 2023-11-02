@@ -11,7 +11,7 @@
 #include <linux/uaccess.h>	  // User access copy function support.
 #define DEVICE_NAME "lkmasg1" // Device name.
 #define CLASS_NAME "char"	  ///< The device class -- this is a character device driver
-
+#define BUFFER_SIZE 1024
 MODULE_LICENSE("GPL");						 ///< The license type -- this affects available functionality
 MODULE_AUTHOR("John Aedo");					 ///< The author -- visible when you use modinfo
 MODULE_DESCRIPTION("lkmasg1 Kernel Module"); ///< The description -- see modinfo
@@ -32,6 +32,11 @@ static int open(struct inode *, struct file *);
 static int close(struct inode *, struct file *);
 static ssize_t read(struct file *, char *, size_t, loff_t *);
 static ssize_t write(struct file *, const char *, size_t, loff_t *);
+
+// Circular buffer to store data in FIFO fashion
+static char buffer[BUFFER_SIZE];
+static int buffer_head = 0;
+static int buffer_tail = 0;
 
 /**
  * File operations structure and the functions it points to.
@@ -123,8 +128,27 @@ static int close(struct inode *inodep, struct file *filep)
  */
 static ssize_t read(struct file *filep, char *buffer, size_t len, loff_t *offset)
 {
-	printk(KERN_INFO "read stub");
-	return 0;
+    int bytes_to_copy;
+    int bytes_available = buffer_head - buffer_tail;
+
+    if (bytes_available == 0)
+    {
+        printk(KERN_INFO "lkmasg1: nothing to read.\n");
+        return 0;
+    }
+
+    bytes_to_copy = min(len, bytes_available);
+   
+    if (copy_to_user(buffer, buffer + buffer_tail, bytes_to_copy) != 0)
+    {
+        printk(KERN_ALERT "lkmasg1: failed to copy data to user space.\n");
+        return -EFAULT;
+    }
+    
+    buffer_tail += bytes_to_copy;
+    printk(KERN_INFO "lkmasg1: %d bytes read from the device.\n", bytes_to_copy);
+
+    return bytes_to_copy;
 }
 
 /*
@@ -132,6 +156,24 @@ static ssize_t read(struct file *filep, char *buffer, size_t len, loff_t *offset
  */
 static ssize_t write(struct file *filep, const char *buffer, size_t len, loff_t *offset)
 {
-	printk(KERN_INFO "write stub");
-	return len;
+    int space_available = BUFFER_SIZE - buffer_head;
+
+    if (space_available == 0)
+    {
+        printk(KERN_INFO "lkmasg1: no space available for writing.\n");
+        return -ENOSPC;
+    }
+
+    int bytes_to_copy = min(len, space_available);
+
+    if (copy_from_user(buffer + buffer_head, buffer, bytes_to_copy) != 0)
+    {
+        printk(KERN_ALERT "lkmasg1: failed to copy data from user space.\n");
+        return -EFAULT;
+    }
+
+    buffer_head += bytes_to_copy;
+    printk(KERN_INFO "lkmasg1: %d bytes written to the device.\n", bytes_to_copy);
+
+    return bytes_to_copy;
 }
